@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from google.cloud import storage
 
 # --- Config ---
-GCS_BUCKET = "flickrec-models"
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "flickrec-models")
 GCS_BLOB = "model.pt"
 LOCAL_PATH = os.path.join("models", "model.pt")
 
