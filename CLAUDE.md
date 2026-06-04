@@ -14,6 +14,7 @@ A content ranking API that scores and ranks movies for a given user using a mult
 ## Running commands
 - Always run long-running scripts (training, tests) in the foreground, not background
 - Never use run_in_background for python train.py or similar scripts
+- For long-running scripts that may exceed 10 minutes, prefix with: env CLAUDE_BASH_MAX_TIMEOUT_MS=3600000
 
 ## Architecture
 - Multi-task MLP in PyTorch: shared layers + p(like) and p(dislike) heads
