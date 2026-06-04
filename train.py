@@ -99,17 +99,16 @@ def build_lookups(users, movies):
 
 
 def build_examples(ratings, user2idx, movie2idx, movie_genres, user_features):
-    """Filter ratings to like/dislike and turn them into model-ready tensors."""
-    # like = rating 4-5, dislike = rating 1; drop the ambiguous 2-3 ratings.
-    keep = ratings[ratings["rating"].isin([1, 4, 5])].copy()
+    """Turn every rating into a model-ready example with like/dislike labels."""
+    # Keep all ratings. like = 4-5, dislike = 1, and 2-3 are neutral (both 0) so
+    # the two heads get independent signal instead of being mirror images.
+    user_idx = ratings["user_id"].map(user2idx).to_numpy()
+    movie_idx = ratings["movie_id"].map(movie2idx).to_numpy()
+    genre = np.stack(ratings["movie_id"].map(movie_genres).to_numpy())
+    meta = np.stack(ratings["user_id"].map(user_features).to_numpy()).astype(np.float32)
 
-    user_idx = keep["user_id"].map(user2idx).to_numpy()
-    movie_idx = keep["movie_id"].map(movie2idx).to_numpy()
-    genre = np.stack(keep["movie_id"].map(movie_genres).to_numpy())
-    meta = np.stack(keep["user_id"].map(user_features).to_numpy()).astype(np.float32)
-
-    like = (keep["rating"] >= 4).to_numpy().astype(np.float32)
-    dislike = (keep["rating"] == 1).to_numpy().astype(np.float32)
+    like = (ratings["rating"] >= 4).to_numpy().astype(np.float32)
+    dislike = (ratings["rating"] == 1).to_numpy().astype(np.float32)
 
     return (
         torch.tensor(user_idx, dtype=torch.long),
@@ -250,7 +249,7 @@ def main():
     print(f"{n_users} users, {n_movies} movies", flush=True)
 
     tensors = build_examples(ratings, user2idx, movie2idx, movie_genres, user_features)
-    print(f"{len(tensors[0])} training examples after filtering", flush=True)
+    print(f"{len(tensors[0])} training examples", flush=True)
 
     # Every movie each user rated (all ratings, not just the like/dislike ones),
     # so the API can exclude already-rated movies from candidates.
