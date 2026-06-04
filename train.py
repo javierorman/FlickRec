@@ -193,7 +193,7 @@ def train_model(tensors, n_users, n_movies, device):
     return model
 
 
-def save_model(model, lookups, n_users, n_movies):
+def save_model(model, lookups, user_rated, n_users, n_movies):
     """Save weights plus everything the API needs to reconstruct features."""
     user2idx, movie2idx, movie_genres, movie_titles, user_features = lookups
     os.makedirs("models", exist_ok=True)
@@ -205,6 +205,7 @@ def save_model(model, lookups, n_users, n_movies):
             "movie_genres": movie_genres,
             "movie_titles": movie_titles,
             "user_features": user_features,
+            "user_rated": user_rated,
             "n_users": n_users,
             "n_movies": n_movies,
             "lambda_": LAMBDA,
@@ -236,8 +237,12 @@ def main():
     tensors = build_examples(ratings, user2idx, movie2idx, movie_genres, user_features)
     print(f"{len(tensors[0])} training examples after filtering", flush=True)
 
+    # Every movie each user rated (all ratings, not just the like/dislike ones),
+    # so the API can exclude already-rated movies from candidates.
+    user_rated = ratings.groupby("user_id")["movie_id"].apply(set).to_dict()
+
     model = train_model(tensors, n_users, n_movies, device)
-    save_model(model, lookups, n_users, n_movies)
+    save_model(model, lookups, user_rated, n_users, n_movies)
 
     # Training and the local save are the important results; a failed upload
     # (e.g. no credentials) should warn, not crash the run.
