@@ -10,6 +10,10 @@ A content ranking API that scores and ranks movies for a given user using a mult
 - Comments only where logic is non-obvious
 - Simple, readable Python throughout
 
+## Running commands
+- Always run long-running scripts (training, tests) in the foreground, not background
+- Never use run_in_background for python train.py or similar scripts
+
 ## Architecture
 - Multi-task MLP in PyTorch: shared layers + p(like) and p(dislike) heads
 - Score = p(like) - λ * p(dislike), λ=0.5 default
