@@ -193,7 +193,21 @@ def train_model(tensors, n_users, n_movies, device):
     return model
 
 
-def save_model(model, lookups, user_rated, n_users, n_movies):
+def build_liked_genres(ratings, movies):
+    """For each user, count the genres of the movies they liked (rating >= 4)."""
+    liked = ratings[ratings["rating"] >= 4][["user_id", "movie_id"]]
+    merged = liked.merge(movies[["movie_id", "genres"]], on="movie_id")
+    merged = merged.assign(genre=merged["genres"].str.split("|")).explode("genre")
+    merged = merged[merged["genre"].isin(GENRES)]
+    counts = merged.groupby(["user_id", "genre"]).size()
+
+    user_liked_genres = {}
+    for (user_id, genre), count in counts.items():
+        user_liked_genres.setdefault(user_id, {})[genre] = int(count)
+    return user_liked_genres
+
+
+def save_model(model, lookups, user_rated, user_liked_genres, n_users, n_movies):
     """Save weights plus everything the API needs to reconstruct features."""
     user2idx, movie2idx, movie_genres, movie_titles, user_features = lookups
     os.makedirs("models", exist_ok=True)
@@ -206,6 +220,7 @@ def save_model(model, lookups, user_rated, n_users, n_movies):
             "movie_titles": movie_titles,
             "user_features": user_features,
             "user_rated": user_rated,
+            "user_liked_genres": user_liked_genres,
             "n_users": n_users,
             "n_movies": n_movies,
             "lambda_": LAMBDA,
@@ -240,9 +255,10 @@ def main():
     # Every movie each user rated (all ratings, not just the like/dislike ones),
     # so the API can exclude already-rated movies from candidates.
     user_rated = ratings.groupby("user_id")["movie_id"].apply(set).to_dict()
+    user_liked_genres = build_liked_genres(ratings, movies)
 
     model = train_model(tensors, n_users, n_movies, device)
-    save_model(model, lookups, user_rated, n_users, n_movies)
+    save_model(model, lookups, user_rated, user_liked_genres, n_users, n_movies)
 
     # Training and the local save are the important results; a failed upload
     # (e.g. no credentials) should warn, not crash the run.

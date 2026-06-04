@@ -76,6 +76,7 @@ movie_genres = _ckpt["movie_genres"]
 movie_titles = _ckpt["movie_titles"]
 user_features = _ckpt["user_features"]
 user_rated = _ckpt["user_rated"]
+user_liked_genres = _ckpt["user_liked_genres"]
 lambda_ = _ckpt["lambda_"]
 
 model = MultiTaskMLP(_ckpt["n_users"], _ckpt["n_movies"])
@@ -144,38 +145,166 @@ def rank(req: RankRequest):
     return {"user_id": user_id, "recommendations": recommendations}
 
 
+@app.get("/user/{user_id}/genre_profile")
+def genre_profile(user_id: int):
+    """Return the genre counts of the movies this user liked (rating >= 4)."""
+    return {"user_id": user_id, "genres": user_liked_genres.get(user_id, {})}
+
+
 # Simple inline UI. Built per request so the user dropdown reflects the model.
 PAGE_TEMPLATE = """<!DOCTYPE html>
-<html>
-<head><title>FlickRec</title></head>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FlickRec</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0f0f0f;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    header { padding: 24px 32px; border-bottom: 1px solid #2a2a2a; }
+    h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+    h1 .accent { color: #e50914; }
+    .controls { display: flex; gap: 12px; align-items: center; padding: 24px 32px; }
+    .controls label { color: #aaaaaa; font-size: 14px; }
+    select {
+      background: #1a1a1a; color: #ffffff; border: 1px solid #2a2a2a;
+      padding: 10px 12px; border-radius: 6px; font-size: 14px; min-width: 120px;
+    }
+    select:focus { outline: none; border-color: #e50914; }
+    button {
+      background: #e50914; color: #ffffff; border: none; padding: 10px 18px;
+      border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #f6121d; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .grid {
+      display: grid; grid-template-columns: 360px 1fr; gap: 24px;
+      padding: 0 32px 32px;
+    }
+    .panel {
+      background: #1a1a1a; border: 1px solid #2a2a2a;
+      border-radius: 10px; padding: 20px;
+    }
+    .panel h2 {
+      margin: 0 0 16px; font-size: 13px; color: #aaaaaa; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th {
+      text-align: left; color: #aaaaaa; font-weight: 600;
+      padding: 10px 12px; border-bottom: 1px solid #2a2a2a;
+    }
+    td { padding: 10px 12px; }
+    tbody tr:nth-child(odd) { background: #1a1a1a; }
+    tbody tr:nth-child(even) { background: #222222; }
+    tbody tr:hover { background: #2a2a2a; }
+    .rank { color: #e50914; font-weight: 700; }
+    .muted { color: #aaaaaa; }
+    .empty { color: #aaaaaa; font-size: 14px; }
+  </style>
+</head>
 <body>
-  <h1>FlickRec</h1>
-  <label>User: <select id="user">__OPTIONS__</select></label>
-  <button onclick="getRecs()">Get Recommendations</button>
-  <table border="1" cellpadding="4" id="results">
-    <thead>
-      <tr><th>Rank</th><th>Title</th><th>p(like)</th><th>p(dislike)</th><th>Score</th></tr>
-    </thead>
-    <tbody></tbody>
-  </table>
+  <header><h1>Flick<span class="accent">Rec</span></h1></header>
+
+  <div class="controls">
+    <label for="user">User</label>
+    <select id="user">__OPTIONS__</select>
+    <button id="btn" onclick="getRecs()">Get Recommendations</button>
+  </div>
+
+  <div class="grid" id="grid" style="display:none;">
+    <div class="panel">
+      <h2>Liked Genres</h2>
+      <div id="chart"><p class="empty">Select a user to see their genre profile.</p></div>
+    </div>
+    <div class="panel">
+      <h2>Top 20 Recommendations</h2>
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Title</th><th>Score</th><th>p(like)</th><th>p(dislike)</th></tr>
+        </thead>
+        <tbody id="recs"></tbody>
+      </table>
+    </div>
+  </div>
+
   <script>
-    async function getRecs() {
-      const userId = parseInt(document.getElementById('user').value);
-      const res = await fetch('/rank', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({user_id: userId}),
+    const userSel = document.getElementById('user');
+    const btn = document.getElementById('btn');
+    const grid = document.getElementById('grid');
+
+    // Draw the liked-genre counts as a horizontal SVG bar chart (no libraries).
+    function drawChart(genres) {
+      const container = document.getElementById('chart');
+      const entries = Object.entries(genres).sort((a, b) => b[1] - a[1]);
+      if (entries.length === 0) {
+        container.innerHTML = '<p class="empty">No liked genres for this user.</p>';
+        return;
+      }
+      const max = entries[0][1];
+      const rowH = 28, barMax = 200, labelW = 96;
+      const width = labelW + barMax + 44;
+      const height = entries.length * rowH;
+      let svg = `<svg width="100%" viewBox="0 0 ${width} ${height}">`;
+      entries.forEach(([genre, count], i) => {
+        const y = i * rowH;
+        const w = Math.max(3, (count / max) * barMax);
+        svg += `<text x="0" y="${y + 18}" fill="#aaaaaa" font-size="12">${genre}</text>`;
+        svg += `<rect x="${labelW}" y="${y + 6}" width="${w}" height="16" rx="3" fill="#e50914"></rect>`;
+        svg += `<text x="${labelW + w + 6}" y="${y + 18}" fill="#ffffff" font-size="12">${count}</text>`;
       });
+      svg += `</svg>`;
+      container.innerHTML = svg;
+    }
+
+    async function loadGenreProfile(userId) {
+      const res = await fetch(`/user/${userId}/genre_profile`);
       const data = await res.json();
-      const body = document.querySelector('#results tbody');
-      body.innerHTML = '';
-      for (const r of data.recommendations) {
-        const row = document.createElement('tr');
-        row.innerHTML = `<td>${r.rank}</td><td>${r.title}</td>` +
-          `<td>${r.p_like}</td><td>${r.p_dislike}</td><td>${r.score}</td>`;
-        body.appendChild(row);
+      drawChart(data.genres);
+    }
+
+    async function getRecs() {
+      const userId = parseInt(userSel.value);
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+      grid.style.display = 'grid';
+      try {
+        await loadGenreProfile(userId);
+        const res = await fetch('/rank', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({user_id: userId}),
+        });
+        const data = await res.json();
+        const body = document.getElementById('recs');
+        body.innerHTML = '';
+        for (const r of data.recommendations) {
+          const row = document.createElement('tr');
+          row.innerHTML =
+            `<td class="rank">${r.rank}</td>` +
+            `<td>${r.title}</td>` +
+            `<td>${r.score}</td>` +
+            `<td class="muted">${r.p_like}</td>` +
+            `<td class="muted">${r.p_dislike}</td>`;
+          body.appendChild(row);
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
       }
     }
+
+    // Refresh the genre profile as soon as a different user is selected.
+    userSel.addEventListener('change', () => {
+      grid.style.display = 'grid';
+      loadGenreProfile(parseInt(userSel.value));
+    });
   </script>
 </body>
 </html>"""
