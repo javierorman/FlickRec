@@ -3,6 +3,13 @@
 ## What this is
 A content ranking API that scores and ranks movies for a given user using a multi-task MLP trained on MovieLens 1M. Built as a portfolio project demonstrating MLOps skills.
 
+## Code philosophy
+- Keep it minimal -- every line should be explainable by the author
+- No clever abstractions or over-engineering
+- Short files -- if a file is getting long, simplify
+- Comments only where logic is non-obvious
+- Simple, readable Python throughout
+
 ## Architecture
 - Multi-task MLP in PyTorch: shared layers + p(like) and p(dislike) heads
 - Score = p(like) - λ * p(dislike), λ=0.5 default
