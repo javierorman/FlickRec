@@ -1,0 +1,7 @@
+.venv/
+data/
+models/
+__pycache__/
+.env
+.git/
+train.py
