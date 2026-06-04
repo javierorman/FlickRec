@@ -45,16 +45,16 @@ AGE_BUCKETS = {1: 0, 18: 1, 25: 2, 35: 3, 45: 4, 50: 5, 56: 6}
 def download_data():
     """Download and unzip MovieLens 1M into data/ if not already present."""
     if os.path.isdir(ML_DIR):
-        print(f"Dataset already present at {ML_DIR}")
+        print(f"Dataset already present at {ML_DIR}", flush=True)
         return
     os.makedirs(DATA_DIR, exist_ok=True)
     zip_path = os.path.join(DATA_DIR, "ml-1m.zip")
-    print(f"Downloading {DATA_URL} ...")
+    print(f"Downloading {DATA_URL} ...", flush=True)
     urllib.request.urlretrieve(DATA_URL, zip_path)
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(DATA_DIR)
     os.remove(zip_path)
-    print(f"Extracted to {ML_DIR}")
+    print(f"Extracted to {ML_DIR}", flush=True)
 
 
 def load_raw():
@@ -186,7 +186,8 @@ def train_model(tensors, n_users, n_movies, device):
         print(
             f"Epoch {epoch:2d}/{EPOCHS}  "
             f"train_loss={train_loss / len(train_ds):.4f}  "
-            f"val_loss={val_loss / len(val_ds):.4f}"
+            f"val_loss={val_loss / len(val_ds):.4f}",
+            flush=True,
         )
 
     return model
@@ -210,7 +211,7 @@ def save_model(model, lookups, n_users, n_movies):
         },
         MODEL_PATH,
     )
-    print(f"Saved model to {MODEL_PATH}")
+    print(f"Saved model to {MODEL_PATH}", flush=True)
 
 
 def upload_to_gcs():
@@ -218,26 +219,32 @@ def upload_to_gcs():
     client = storage.Client()
     blob = client.bucket(GCS_BUCKET).blob(GCS_BLOB)
     blob.upload_from_filename(MODEL_PATH)
-    print(f"Uploaded {MODEL_PATH} to gs://{GCS_BUCKET}/{GCS_BLOB}")
+    print(f"Uploaded {MODEL_PATH} to gs://{GCS_BUCKET}/{GCS_BLOB}", flush=True)
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    print(f"Using device: {device}", flush=True)
 
     download_data()
     ratings, users, movies = load_raw()
     lookups = build_lookups(users, movies)
     user2idx, movie2idx, movie_genres, _, user_features = lookups
     n_users, n_movies = len(user2idx), len(movie2idx)
-    print(f"{n_users} users, {n_movies} movies")
+    print(f"{n_users} users, {n_movies} movies", flush=True)
 
     tensors = build_examples(ratings, user2idx, movie2idx, movie_genres, user_features)
-    print(f"{len(tensors[0])} training examples after filtering")
+    print(f"{len(tensors[0])} training examples after filtering", flush=True)
 
     model = train_model(tensors, n_users, n_movies, device)
     save_model(model, lookups, n_users, n_movies)
-    upload_to_gcs()
+
+    # Training and the local save are the important results; a failed upload
+    # (e.g. no credentials) should warn, not crash the run.
+    try:
+        upload_to_gcs()
+    except Exception as e:
+        print(f"WARNING: skipped GCS upload ({e})", flush=True)
 
 
 if __name__ == "__main__":
