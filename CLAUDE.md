@@ -9,6 +9,7 @@ A content ranking API that scores and ranks movies for a given user using a mult
 - Short files -- if a file is getting long, simplify
 - Comments only where logic is non-obvious
 - Simple, readable Python throughout
+- Final cleanup pass needed before sharing: trim verbose docstrings, remove comments that restate the code, simplify over-engineered error handling. Code should read like a thoughtful engineer wrote it, not an AI.
 
 ## Running commands
 - Always run long-running scripts (training, tests) in the foreground, not background
