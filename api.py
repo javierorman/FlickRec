@@ -1,10 +1,4 @@
-"""FlickRec ranking API.
-
-Loads the trained multi-task MLP (from GCS, falling back to a local copy) and
-serves rankings over HTTP. Everything lives in this one file on purpose; see
-CLAUDE.md. The MultiTaskMLP class is copied verbatim from train.py so the API
-has no dependency on the training code.
-"""
+"""FlickRec ranking API: serves movie rankings from the trained model."""
 
 import os
 import random
@@ -19,15 +13,21 @@ from pydantic import BaseModel
 
 from google.cloud import storage
 
-# --- Config ---
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "flickrec-models")
 GCS_BLOB = "model.pt"
 LOCAL_PATH = os.path.join("models", "model.pt")
 
 EMB_DIM = 32
 
+# Same genre order as train.py so the multi-hot indices line up.
+GENRES = [
+    "Action", "Adventure", "Animation", "Children's", "Comedy", "Crime",
+    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "Musical",
+    "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
+]
 
-# --- Model (copied verbatim from train.py, no import from train.py) ---
+
+# Copied verbatim from train.py so the API doesn't depend on the training code.
 class MultiTaskMLP(nn.Module):
     """Shared trunk over [user_emb | movie_emb | genre | meta] with two heads."""
 
@@ -53,19 +53,15 @@ class MultiTaskMLP(nn.Module):
 
 
 def load_checkpoint():
-    """Download model.pt from GCS; fall back to the local copy if that fails."""
+    """Download model.pt from GCS, falling back to the local copy."""
     try:
-        client = storage.Client()
-        blob = client.bucket(GCS_BUCKET).blob(GCS_BLOB)
         tmp = os.path.join(tempfile.gettempdir(), "flickrec_model.pt")
-        blob.download_to_filename(tmp)
+        storage.Client().bucket(GCS_BUCKET).blob(GCS_BLOB).download_to_filename(tmp)
         print(f"Loaded model from gs://{GCS_BUCKET}/{GCS_BLOB}", flush=True)
         return torch.load(tmp, map_location="cpu", weights_only=False)
     except Exception as e:
-        print(f"GCS download failed ({e}); trying local {LOCAL_PATH}", flush=True)
-        if os.path.exists(LOCAL_PATH):
-            return torch.load(LOCAL_PATH, map_location="cpu", weights_only=False)
-        raise RuntimeError("No model available from GCS or local disk")
+        print(f"GCS unavailable ({e}); loading local {LOCAL_PATH}", flush=True)
+        return torch.load(LOCAL_PATH, map_location="cpu", weights_only=False)
 
 
 # Load the model once at import time, before the app serves any request.
@@ -99,7 +95,6 @@ def health():
 def rank(req: RankRequest):
     """Sample 500 candidate movies, score them, and return the top 20."""
     user_id = req.user_id
-    # Candidate pool is every movie the user has not already rated.
     rated = user_rated.get(user_id, set())
     pool = [m for m in movie2idx.keys() if m not in rated]
     n = min(500, len(pool))
@@ -109,16 +104,16 @@ def rank(req: RankRequest):
         u_idx = user2idx[user_id]
         meta = user_features[user_id]
     else:
-        # Unknown user: use embedding index 0 and neutral metadata so we can
-        # still return something sensible rather than erroring out.
+        # Unknown user: fall back to embedding 0 and neutral metadata.
         u_idx = 0
         meta = [0, 0, 0]
 
+    movie_indices = [movie2idx[m] for m in candidates]
+    genre_vectors = [movie_genres[m] for m in candidates]
+
     user_t = torch.tensor([u_idx] * n, dtype=torch.long)
-    movie_t = torch.tensor([movie2idx[m] for m in candidates], dtype=torch.long)
-    genre_t = torch.tensor(
-        np.stack([movie_genres[m] for m in candidates]), dtype=torch.float32
-    )
+    movie_t = torch.tensor(movie_indices, dtype=torch.long)
+    genre_t = torch.tensor(np.stack(genre_vectors), dtype=torch.float32)
     meta_t = torch.tensor([meta] * n, dtype=torch.float32)
 
     with torch.no_grad():
@@ -131,11 +126,13 @@ def rank(req: RankRequest):
     recommendations = []
     for rank_i, idx in enumerate(top, start=1):
         mid = candidates[idx]
+        genres = [GENRES[i] for i, on in enumerate(movie_genres[mid]) if on]
         recommendations.append(
             {
                 "rank": rank_i,
                 "movie_id": int(mid),
                 "title": movie_titles[mid],
+                "genres": ", ".join(genres[:3]),
                 "p_like": round(float(p_like[idx]), 4),
                 "p_dislike": round(float(p_dislike[idx]), 4),
                 "score": round(float(score[idx]), 4),
@@ -151,7 +148,7 @@ def genre_profile(user_id: int):
     return {"user_id": user_id, "genres": user_liked_genres.get(user_id, {})}
 
 
-# Simple inline UI. Built per request so the user dropdown reflects the model.
+# Built per request so the dropdown can list the model's users.
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -205,6 +202,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     tbody tr:hover { background: #2a2a2a; }
     .rank { color: #e50914; font-weight: 700; }
     .muted { color: #aaaaaa; }
+    .genres { color: #aaaaaa; font-size: 12px; }
     .empty { color: #aaaaaa; font-size: 14px; }
   </style>
 </head>
@@ -226,7 +224,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
       <h2>Top 20 Recommendations</h2>
       <table>
         <thead>
-          <tr><th>Rank</th><th>Title</th><th>Score</th><th>p(like)</th><th>p(dislike)</th></tr>
+          <tr><th>Rank</th><th>Title</th><th>Genres</th><th>Score</th><th>p(like)</th><th>p(dislike)</th></tr>
         </thead>
         <tbody id="recs"></tbody>
       </table>
@@ -238,7 +236,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     const btn = document.getElementById('btn');
     const grid = document.getElementById('grid');
 
-    // Draw the liked-genre counts as a horizontal SVG bar chart (no libraries).
+    // Draw the liked-genre counts as simple HTML bars.
     function drawChart(genres) {
       const container = document.getElementById('chart');
       const entries = Object.entries(genres).sort((a, b) => b[1] - a[1]);
@@ -247,19 +245,17 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
         return;
       }
       const max = entries[0][1];
-      const rowH = 28, barMax = 200, labelW = 96;
-      const width = labelW + barMax + 44;
-      const height = entries.length * rowH;
-      let svg = `<svg width="100%" viewBox="0 0 ${width} ${height}">`;
-      entries.forEach(([genre, count], i) => {
-        const y = i * rowH;
-        const w = Math.max(3, (count / max) * barMax);
-        svg += `<text x="0" y="${y + 18}" fill="#aaaaaa" font-size="12">${genre}</text>`;
-        svg += `<rect x="${labelW}" y="${y + 6}" width="${w}" height="16" rx="3" fill="#e50914"></rect>`;
-        svg += `<text x="${labelW + w + 6}" y="${y + 18}" fill="#ffffff" font-size="12">${count}</text>`;
-      });
-      svg += `</svg>`;
-      container.innerHTML = svg;
+      let html = '';
+      for (const [genre, count] of entries) {
+        const pct = (count / max) * 100;
+        html +=
+          `<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:12px;">` +
+          `<span style="width:90px; color:#aaaaaa;">${genre}</span>` +
+          `<div style="background:#e50914; height:14px; border-radius:3px; width:${pct}%;"></div>` +
+          `<span style="color:#ffffff;">${count}</span>` +
+          `</div>`;
+      }
+      container.innerHTML = html;
     }
 
     async function loadGenreProfile(userId) {
@@ -289,6 +285,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
           row.innerHTML =
             `<td class="rank">${r.rank}</td>` +
             `<td>${r.title}</td>` +
+            `<td class="genres">${r.genres}</td>` +
             `<td>${r.score}</td>` +
             `<td class="muted">${r.p_like}</td>` +
             `<td class="muted">${r.p_dislike}</td>`;
@@ -312,7 +309,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    # Populate the dropdown with the first 100 user IDs from the model.
+    # First 100 users is enough to demo the dropdown.
     first_100 = list(user2idx.keys())[:100]
     options = "".join(f'<option value="{uid}">{uid}</option>' for uid in first_100)
     return PAGE_TEMPLATE.replace("__OPTIONS__", options)

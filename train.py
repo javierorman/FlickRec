@@ -1,8 +1,4 @@
-"""Train the FlickRec multi-task MLP on MovieLens 1M.
-
-Pipeline: download data -> build labels and features -> train -> save model.pt
--> upload to GCS. Everything lives in this one file on purpose; see CLAUDE.md.
-"""
+"""Train the FlickRec multi-task MLP on MovieLens 1M."""
 
 import os
 import urllib.request
@@ -12,12 +8,10 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from google.cloud import storage
 
-# --- Config ---
 DATA_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 DATA_DIR = "data"
 ML_DIR = os.path.join(DATA_DIR, "ml-1m")
@@ -43,7 +37,6 @@ AGE_BUCKETS = {1: 0, 18: 1, 25: 2, 35: 3, 45: 4, 50: 5, 56: 6}
 
 
 def download_data():
-    """Download and unzip MovieLens 1M into data/ if not already present."""
     if os.path.isdir(ML_DIR):
         print(f"Dataset already present at {ML_DIR}", flush=True)
         return
@@ -59,11 +52,13 @@ def download_data():
 
 def load_raw():
     """Read the three MovieLens .dat files into DataFrames."""
-    read = lambda name, cols: pd.read_csv(
-        os.path.join(ML_DIR, name),
-        sep="::", engine="python", encoding="latin-1",
-        header=None, names=cols,
-    )
+    def read(name, cols):
+        return pd.read_csv(
+            os.path.join(ML_DIR, name),
+            sep="::", engine="python", encoding="latin-1",
+            header=None, names=cols,
+        )
+
     ratings = read("ratings.dat", ["user_id", "movie_id", "rating", "ts"])
     users = read("users.dat", ["user_id", "gender", "age", "occupation", "zip"])
     movies = read("movies.dat", ["movie_id", "title", "genres"])
@@ -76,13 +71,12 @@ def build_lookups(users, movies):
     user2idx = {uid: i for i, uid in enumerate(users["user_id"])}
     movie2idx = {mid: i for i, mid in enumerate(movies["movie_id"])}
 
-    genre_index = {g: i for i, g in enumerate(GENRES)}
     movie_genres = {}
     for mid, genres in zip(movies["movie_id"], movies["genres"]):
         vec = np.zeros(len(GENRES), dtype=np.float32)
         for g in genres.split("|"):
-            if g in genre_index:
-                vec[genre_index[g]] = 1.0
+            if g in GENRES:
+                vec[GENRES.index(g)] = 1.0
         movie_genres[mid] = vec
 
     movie_titles = dict(zip(movies["movie_id"], movies["title"]))
@@ -104,8 +98,12 @@ def build_examples(ratings, user2idx, movie2idx, movie_genres, user_features):
     # the two heads get independent signal instead of being mirror images.
     user_idx = ratings["user_id"].map(user2idx).to_numpy()
     movie_idx = ratings["movie_id"].map(movie2idx).to_numpy()
-    genre = np.stack(ratings["movie_id"].map(movie_genres).to_numpy())
-    meta = np.stack(ratings["user_id"].map(user_features).to_numpy()).astype(np.float32)
+
+    genre_vectors = ratings["movie_id"].map(movie_genres)
+    genre = np.stack(genre_vectors.to_numpy())
+
+    meta_rows = ratings["user_id"].map(user_features)
+    meta = np.stack(meta_rows.to_numpy()).astype(np.float32)
 
     like = (ratings["rating"] >= 4).to_numpy().astype(np.float32)
     dislike = (ratings["rating"] == 1).to_numpy().astype(np.float32)
@@ -146,12 +144,12 @@ class MultiTaskMLP(nn.Module):
 
 def train_model(tensors, n_users, n_movies, device):
     """Train the MLP with an 80/20 split and return the trained model."""
-    train_parts, val_parts = train_test_split(
-        list(range(len(tensors[0]))), test_size=0.2, random_state=42
+    dataset = TensorDataset(*tensors)
+    n_val = int(0.2 * len(dataset))
+    train_ds, val_ds = random_split(
+        dataset, [len(dataset) - n_val, n_val],
+        generator=torch.Generator().manual_seed(42),
     )
-    # train_test_split on indices keeps the split reproducible and memory-light.
-    train_ds = TensorDataset(*[t[train_parts] for t in tensors])
-    val_ds = TensorDataset(*[t[val_parts] for t in tensors])
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
 
@@ -194,11 +192,13 @@ def train_model(tensors, n_users, n_movies, device):
 
 def build_liked_genres(ratings, movies):
     """For each user, count the genres of the movies they liked (rating >= 4)."""
-    liked = ratings[ratings["rating"] >= 4][["user_id", "movie_id"]]
-    merged = liked.merge(movies[["movie_id", "genres"]], on="movie_id")
-    merged = merged.assign(genre=merged["genres"].str.split("|")).explode("genre")
-    merged = merged[merged["genre"].isin(GENRES)]
-    counts = merged.groupby(["user_id", "genre"]).size()
+    liked = ratings[ratings["rating"] >= 4].merge(
+        movies[["movie_id", "genres"]], on="movie_id"
+    )
+    liked["genre"] = liked["genres"].str.split("|")
+    liked = liked.explode("genre")
+    liked = liked[liked["genre"].isin(GENRES)]
+    counts = liked.groupby(["user_id", "genre"]).size()
 
     user_liked_genres = {}
     for (user_id, genre), count in counts.items():

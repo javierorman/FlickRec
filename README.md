@@ -10,8 +10,23 @@ https://flickrec-zyqqaqoc2a-uc.a.run.app
 
 - **Dataset:** MovieLens 1M (1M ratings, 6040 users, 3883 movies)
 - **Model:** a multi-task MLP with shared layers and two heads: p(like) and p(dislike)
-- **Scoring:** score = p(like) - 0.5 * p(dislike)
-- **API:** given a user, it samples 500 unrated candidate movies, scores each, and returns the top 20
+
+### Model
+
+- Multi-task MLP: shared layers feed two heads, p(like) and p(dislike)
+- Labels: like=4-5, dislike=1, neutral=2-3. Neutral examples are needed: without them the two heads learn to be mirror images and scores saturate near 1.0
+- Score: p(like) - 0.5 * p(dislike)
+- Features: user embedding, movie embedding, genre multi-hot, age bucket, gender, occupation
+
+### Candidate generation
+
+Each request samples 500 unrated movies at random, scores them, and returns the top 20. In production this would be a retrieval stage with a two-tower model and ANN search.
+
+### Known limitations
+
+- Scores are not calibrated probabilities; they reflect ranking order
+- No session context or recency signals
+- Candidate generation is random, not learned retrieval
 
 ## Run locally
 
